@@ -5,7 +5,6 @@ import gc
 import operator
 from circus.fixed_threading import Thread, get_ident
 import sys
-import select
 import socket
 from tornado import gen
 
@@ -644,23 +643,27 @@ class Arbiter(object):
         if self._stopping:
             return
 
-        need_on_demand = False
         # manage and reap processes
         self.reap_processes()
         list_to_yield = []
         for watcher in self.iter_watchers():
             if watcher.on_demand and watcher.is_stopped():
-                need_on_demand = True
+                for sock in watcher.sockets.values():
+                    self.loop.add_handler(sock.fileno(), self.connection_ready,
+                                          self.loop.READ)
             list_to_yield.append(watcher.manage_processes())
         if len(list_to_yield) > 0:
             yield list_to_yield
 
-        if need_on_demand:
-            sockets = [x.fileno() for x in self.sockets.values()]
-            rlist, wlist, xlist = select.select(sockets, [], [], 0)
-            for r in rlist:
+    @synchronized("manage_watchers")
+    def connection_ready(self, fd, events):
+        logger.debug("got event on fd %s", fd)
+        self.loop.remove_handler(fd)
+        watchers = self.iter_active_watchers(fd)
+        for watcher in watchers:
+            if watcher.autostart:
                 self.socket_event = True
-                self._start_watchers(watcher_fd=r)
+                watcher._start()
                 self.socket_event = False
 
     @synchronized("arbiter_reload")
@@ -754,10 +757,8 @@ class Arbiter(object):
         yield self._start_watchers(watcher_iter_func=watcher_iter_func)
 
     @gen.coroutine
-    def _start_watchers(self, watcher_iter_func=None, watcher_fd=None):
-        if watcher_fd is not None:
-            watchers = self.iter_active_watchers(watcher_fd)
-        elif watcher_iter_func is None:
+    def _start_watchers(self, watcher_iter_func=None):
+        if watcher_iter_func is None:
             watchers = self.iter_watchers()
         else:
             watchers = watcher_iter_func()
