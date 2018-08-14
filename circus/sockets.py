@@ -125,7 +125,7 @@ class CircusSocket(socket.socket):
                  family=socket.AF_INET, type=socket.SOCK_STREAM,
                  proto=0, backlog=2048, path=None, umask=None, replace=False,
                  interface=None, so_reuseport=False, blocking=False,
-                 group=None):
+                 group=None, uid=None):
         if path is not None:
             if not hasattr(socket, 'AF_UNIX'):
                 raise NotImplementedError("AF_UNIX not supported on this"
@@ -142,6 +142,7 @@ class CircusSocket(socket.socket):
         self.replace = replace
         self.use_papa = False
         self.group = group
+        self.uid = uid
 
         if hasattr(socket, 'AF_UNIX') and family == socket.AF_UNIX:
             self.host = self.port = None
@@ -195,12 +196,16 @@ class CircusSocket(socket.socket):
                         raise OSError("%r already exists. You might want to "
                                       "remove it. If it's a stalled socket "
                                       "file, just restart Circus" % self.path)
+                if self.uid is not None:
+                    os.seteuid(self.uid)
                 if self.umask is None:
                     self.bind(self.path)
                 else:
                     old_mask = os.umask(self.umask)
                     self.bind(self.path)
                     os.umask(old_mask)
+                if self.uid is not None:
+                    os.seteuid(0)
             else:
                 if self.interface is not None:
                     # Bind to device if given, e.g. to limit which device to
@@ -251,11 +256,14 @@ class CircusSocket(socket.socket):
                   'umask': int(config.get('umask', 8)),
                   'replace': config.get('replace'),
                   'blocking': to_bool(config.get('blocking')),
-                  'group': config.get('group')}
+                  'group': config.get('group'),
+                  'uid': config.get('uid')}
         use_papa = to_bool(config.get('use_papa')) and papa is not None
         proto_name = config.get('proto')
         if proto_name is not None:
             params['proto'] = socket.getprotobyname(proto_name)
+        if params['uid'] is not None:
+            params['uid'] = int(params['uid'])
         socket_class = PapaSocketProxy if use_papa else cls
         s = socket_class(**params)
 
